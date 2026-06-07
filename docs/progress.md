@@ -15,6 +15,10 @@
 - **ArgoCD Integration**: Evolved the local Docker Compose bootstrap process (`bootstrap.sh`) to automatically install ArgoCD within the `k3s` cluster.
 - **GitOps Pipeline**: Successfully moved demo workload manifests (`oom-demo.yaml`, `crashloop-demo.yaml`) to the public GitHub repository: [zyusong0614/k8s-agent-gitops](https://github.com/zyusong0614/k8s-agent-gitops). 
 - **Automated Synchronization**: Configured an ArgoCD `Application` resource with `Automated Sync`. The cluster state is now completely declarative and bound to the GitHub repository.
+- **Repository Security & Open Source Readiness**: 
+  - Purged all hardcoded personal configurations, secrets, and API tokens (Anthropic, Jira) from `docker-compose.yml`.
+  - Enforced a strict separation of configuration, migrating all sensitive variables to a local, untracked `.env` file using the 12-Factor App methodology.
+  - Successfully published the sanitized base repository to [zyusong0614/k8s-agent](https://github.com/zyusong0614/k8s-agent).
 
 ## Current Architecture State
 
