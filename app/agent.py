@@ -66,7 +66,6 @@ def handle_incident(payload: dict, settings: Settings, redis_client) -> dict:
     decision = diagnose(incident, settings)
     llm = LLMClient(settings)
     jira = JiraClient(settings)
-    github = GitHubClient(settings)
 
     decision.llm_diagnosis = llm.generate_diagnosis(incident, decision)
     
@@ -85,9 +84,11 @@ def handle_incident(payload: dict, settings: Settings, redis_client) -> dict:
         is_appended = True
     else:
         issue = jira.create_issue(incident, decision)
+        jira.add_comment(issue, render_jira_comment(incident, decision, pr=None))
         if decision.pr_required:
-            pr = github.open_pull_request(issue.key, incident, decision)
-        jira.add_comment(issue, render_jira_comment(incident, decision, pr))
+            from app.worker import remediate_incident
+            logger.info("Dispatching async Remediation Agent for issue %s", issue.key)
+            remediate_incident.delay(issue.key, incident.model_dump(mode="json"), decision.model_dump(mode="json"))
         redis_client.setex(correlation_key, settings.correlation_ttl_seconds, issue.key)
 
     logger.info(

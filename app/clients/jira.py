@@ -56,3 +56,39 @@ class JiraClient:
         except httpx.HTTPError as e:
             logger.error("Failed to add Jira comment: %s", e)
 
+    def transition_issue(self, issue: JiraIssue, status_name: str) -> None:
+        if self.settings.dry_run or not self.auth or issue.key.startswith("DRYRUN") or issue.key.endswith("-ERROR"):
+            logger.info("dry_run.jira transition_issue key=%s to status=%s", issue.key, status_name)
+            return
+
+        # 1. Fetch available transitions
+        url_get = f"{self.settings.jira_base_url}/rest/api/2/issue/{issue.key}/transitions"
+        try:
+            resp = httpx.get(url_get, auth=self.auth, headers=self.headers, timeout=10.0)
+            resp.raise_for_status()
+            transitions = resp.json().get("transitions", [])
+        except httpx.HTTPError as e:
+            logger.error("Failed to fetch transitions for %s: %s", issue.key, e)
+            return
+
+        # 2. Find the transition ID by matching the name
+        target_id = None
+        for t in transitions:
+            if t["name"].lower() == status_name.lower() or t.get("to", {}).get("name", "").lower() == status_name.lower():
+                target_id = t["id"]
+                break
+
+        if not target_id:
+            logger.warning("No transition found matching '%s' for issue %s. Available: %s", status_name, issue.key, [t["name"] for t in transitions])
+            return
+
+        # 3. Perform the transition
+        url_post = url_get
+        payload = {"transition": {"id": target_id}}
+        try:
+            resp_post = httpx.post(url_post, json=payload, auth=self.auth, headers=self.headers, timeout=10.0)
+            resp_post.raise_for_status()
+            logger.info("Successfully transitioned %s to %s", issue.key, status_name)
+        except httpx.HTTPError as e:
+            logger.error("Failed to transition %s to %s: %s", issue.key, status_name, e)
+
