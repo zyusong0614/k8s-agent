@@ -102,7 +102,7 @@ class JiraClient:
         if self.settings.dry_run or not self.auth:
             return []
         
-        url = f"{self.settings.jira_base_url}/rest/api/2/search"
+        url = f"{self.settings.jira_base_url}/rest/api/2/search/jql"
         params = {"jql": jql, "maxResults": 50, "fields": "summary,description,status"}
         try:
             resp = httpx.get(url, params=params, auth=self.auth, headers=self.headers, timeout=10.0)
