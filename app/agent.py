@@ -86,9 +86,7 @@ def handle_incident(payload: dict, settings: Settings, redis_client) -> dict:
         issue = jira.create_issue(incident, decision)
         jira.add_comment(issue, render_jira_comment(incident, decision, pr=None))
         if decision.pr_required:
-            from app.worker import remediate_incident
-            logger.info("Dispatching async Remediation Agent for issue %s", issue.key)
-            remediate_incident.delay(issue.key, incident.model_dump(mode="json"), decision.model_dump(mode="json"))
+            logger.info("AI-Remediation requested. Remediation Agent will pick up issue %s via Jira polling.", issue.key)
         redis_client.setex(correlation_key, settings.correlation_ttl_seconds, issue.key)
 
     logger.info(

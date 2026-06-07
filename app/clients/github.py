@@ -1,9 +1,7 @@
 import base64
 import logging
-import re
-from datetime import datetime
-
 import httpx
+from datetime import datetime
 
 from app.config import Settings
 from app.schemas import AgentDecision, IncidentPayload, PullRequest
@@ -26,91 +24,101 @@ class GitHubClient:
         self.repo = self.settings.github_repo
         self.base_branch = self.settings.github_base_branch
 
-    def open_pull_request(self, issue_key: str, incident: IncidentPayload, decision: AgentDecision) -> PullRequest:
-        branch = f"ai-fix/{issue_key.lower()}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        title = f"[{issue_key}] {incident.workload_name}: {decision.incident_type} remediation"
+    def _get_base_url(self) -> str:
+        return f"{self.base_url}/repos/{self.owner}/{self.repo}"
+
+    def get_file_content(self, file_path: str, ref: str = None) -> tuple[str, str]:
+        if not ref:
+            ref = self.base_branch
+        url = f"{self._get_base_url()}/contents/{file_path}?ref={ref}"
+        resp = httpx.get(url, headers=self.headers)
+        if resp.status_code == 404:
+            return "", ""
+        resp.raise_for_status()
+        data = resp.json()
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        return content, data["sha"]
+
+    def ensure_branch(self, branch: str) -> None:
+        """Creates branch if it does not exist"""
+        url = f"{self._get_base_url()}/git/ref/heads/{branch}"
+        resp = httpx.get(url, headers=self.headers)
+        if resp.status_code == 200:
+            return  # branch exists
         
-        if self.settings.dry_run or not self.settings.github_token or not self.owner or not self.repo:
-            logger.info("dry_run.github open_pull_request branch=%s title=%s", branch, title)
-            return PullRequest(title=title, branch=branch, url=f"dry-run://github/pr/{branch}")
+        # Get base sha
+        ref_resp = httpx.get(f"{self._get_base_url()}/git/ref/heads/{self.base_branch}", headers=self.headers)
+        ref_resp.raise_for_status()
+        base_sha = ref_resp.json()["object"]["sha"]
 
-        try:
-            # 1. Get base SHA
-            base_url = f"{self.base_url}/repos/{self.owner}/{self.repo}"
-            ref_resp = httpx.get(f"{base_url}/git/ref/heads/{self.base_branch}", headers=self.headers)
-            ref_resp.raise_for_status()
-            base_sha = ref_resp.json()["object"]["sha"]
+        branch_resp = httpx.post(
+            f"{self._get_base_url()}/git/refs",
+            headers=self.headers,
+            json={"ref": f"refs/heads/{branch}", "sha": base_sha}
+        )
+        branch_resp.raise_for_status()
 
-            # 2. Create branch
-            branch_resp = httpx.post(
-                f"{base_url}/git/refs",
-                headers=self.headers,
-                json={"ref": f"refs/heads/{branch}", "sha": base_sha}
-            )
-            branch_resp.raise_for_status()
+    def push_file(self, branch: str, file_path: str, content: str, commit_msg: str) -> None:
+        self.ensure_branch(branch)
+        _, file_sha = self.get_file_content(file_path, ref=branch)
+        
+        payload = {
+            "message": commit_msg,
+            "content": base64.b64encode(content.encode("utf-8")).decode("utf-8"),
+            "branch": branch
+        }
+        if file_sha:
+            payload["sha"] = file_sha
 
-            # 3. Get existing file
-            file_path = f"deploy/workloads/{incident.workload_name}.yaml"
-            file_resp = httpx.get(
-                f"{base_url}/contents/{file_path}?ref={self.base_branch}",
-                headers=self.headers
-            )
-            if file_resp.status_code == 404:
-                logger.error("Target file %s not found in repo", file_path)
-                return PullRequest(title=title, branch=branch, url=f"error://github/file-not-found")
+        resp = httpx.put(
+            f"{self._get_base_url()}/contents/{file_path}",
+            headers=self.headers,
+            json=payload
+        )
+        resp.raise_for_status()
+
+    def create_or_update_pr(self, title: str, body: str, branch: str) -> PullRequest:
+        # Check if PR exists
+        url = f"{self._get_base_url()}/pulls"
+        resp = httpx.get(url, params={"head": f"{self.owner}:{branch}", "state": "open"}, headers=self.headers)
+        resp.raise_for_status()
+        prs = resp.json()
+        
+        if prs:
+            pr = prs[0]
+            # Update body if needed
+            httpx.patch(pr["url"], headers=self.headers, json={"body": body})
+            return PullRequest(title=pr["title"], branch=branch, url=pr["html_url"])
             
-            file_resp.raise_for_status()
-            file_data = file_resp.json()
-            file_sha = file_data["sha"]
-            content_decoded = base64.b64decode(file_data["content"]).decode("utf-8")
+        # Create new PR
+        resp = httpx.post(
+            url,
+            headers=self.headers,
+            json={
+                "title": title,
+                "body": body,
+                "head": branch,
+                "base": self.base_branch
+            }
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return PullRequest(title=data["title"], branch=branch, url=data["html_url"])
 
-            # 4. Modify YAML using regex if memory recommendation exists
-            new_content = content_decoded
-            if decision.memory_recommendation:
-                old_mem = decision.memory_recommendation.current_limit
-                new_mem = decision.memory_recommendation.proposed_limit
-                
-                # Careful regex to replace 'memory: <old_mem>' with 'memory: <new_mem>'
-                pattern = rf"(memory:\s*['\"]?){re.escape(old_mem)}(['\"]?)"
-                if re.search(pattern, new_content):
-                    new_content = re.sub(pattern, rf"\g<1>{new_mem}\g<2>", new_content)
-                else:
-                    logger.warning("Could not find memory pattern '%s' in YAML. Proceeding anyway.", old_mem)
-
-            # 5. Commit File
-            commit_message = f"[{issue_key}] Auto-remediation: bump memory limit to {decision.memory_recommendation.proposed_limit if decision.memory_recommendation else 'N/A'}"
-            update_resp = httpx.put(
-                f"{base_url}/contents/{file_path}",
-                headers=self.headers,
-                json={
-                    "message": commit_message,
-                    "content": base64.b64encode(new_content.encode("utf-8")).decode("utf-8"),
-                    "sha": file_sha,
-                    "branch": branch
-                }
-            )
-            update_resp.raise_for_status()
-
-            # 6. Create PR
-            pr_body = f"This PR was automatically generated by K8s-Agent to resolve {decision.incident_type}.\n\n**Diagnosis**\n{decision.llm_diagnosis}"
-            pr_resp = httpx.post(
-                f"{base_url}/pulls",
-                headers=self.headers,
-                json={
-                    "title": title,
-                    "body": pr_body,
-                    "head": branch,
-                    "base": self.base_branch
-                }
-            )
-            pr_resp.raise_for_status()
-            pr_data = pr_resp.json()
+    def get_pr_comments(self, branch: str) -> list[str]:
+        if self.settings.dry_run or not self.settings.github_token:
+            return []
             
-            logger.info("Successfully created PR: %s", pr_data["html_url"])
-            return PullRequest(title=title, branch=branch, url=pr_data["html_url"])
-
-        except httpx.HTTPError as e:
-            logger.error("GitHub API error: %s", e)
-            if hasattr(e, 'response') and e.response is not None:
-                logger.error("Response: %s", e.response.text)
-            return PullRequest(title=title, branch=branch, url=f"error://github/api-error")
+        # Find PR
+        url = f"{self._get_base_url()}/pulls"
+        resp = httpx.get(url, params={"head": f"{self.owner}:{branch}", "state": "open"}, headers=self.headers)
+        if resp.status_code != 200 or not resp.json():
+            return []
+        
+        pr_number = resp.json()[0]["number"]
+        comments_url = f"{self._get_base_url()}/issues/{pr_number}/comments"
+        c_resp = httpx.get(comments_url, headers=self.headers)
+        if c_resp.status_code != 200:
+            return []
+            
+        return [c["body"] for c in c_resp.json()]

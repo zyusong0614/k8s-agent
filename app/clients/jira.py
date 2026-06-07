@@ -25,12 +25,18 @@ class JiraClient:
             return JiraIssue(key=key, url=f"dry-run://jira/{key}")
         
         url = f"{self.settings.jira_base_url}/rest/api/2/issue"
+        import json
+        agent_context = json.dumps({"workload_name": incident.workload_name})
+        desc = f"Incident: {incident.alert_name}\nReason: {incident.reason}\n\nDiagnosis:\n{decision.llm_diagnosis}\n\nEvidence:\n" + "\n".join(decision.evidence)
+        desc += f"\n\n{{code:json}}\n{agent_context}\n{{code}}"
+
         payload = {
             "fields": {
                 "project": {"key": self.settings.jira_project_key},
                 "summary": decision.summary[:255],
-                "description": f"Incident: {incident.alert_name}\nReason: {incident.reason}\n\nDiagnosis:\n{decision.llm_diagnosis}\n\nEvidence:\n" + "\n".join(decision.evidence),
-                "issuetype": {"name": "Task"}
+                "description": desc,
+                "issuetype": {"name": "Task"},
+                "labels": ["AI-Remediation"]
             }
         }
         try:
@@ -91,4 +97,35 @@ class JiraClient:
             logger.info("Successfully transitioned %s to %s", issue.key, status_name)
         except httpx.HTTPError as e:
             logger.error("Failed to transition %s to %s: %s", issue.key, status_name, e)
+
+    def search_issues(self, jql: str) -> list[dict]:
+        if self.settings.dry_run or not self.auth:
+            return []
+        
+        url = f"{self.settings.jira_base_url}/rest/api/2/search"
+        params = {"jql": jql, "maxResults": 50, "fields": "summary,description,status"}
+        try:
+            resp = httpx.get(url, params=params, auth=self.auth, headers=self.headers, timeout=10.0)
+            resp.raise_for_status()
+            return resp.json().get("issues", [])
+        except httpx.HTTPError as e:
+            logger.error("Failed to search Jira issues: %s", e)
+            return []
+
+    def get_issue_details(self, issue_key: str) -> dict:
+        if self.settings.dry_run or not self.auth:
+            return {"description": "", "comments": []}
+            
+        url = f"{self.settings.jira_base_url}/rest/api/2/issue/{issue_key}"
+        params = {"fields": "description,comment"}
+        try:
+            resp = httpx.get(url, params=params, auth=self.auth, headers=self.headers, timeout=10.0)
+            resp.raise_for_status()
+            data = resp.json().get("fields", {})
+            desc = data.get("description", "")
+            comments = [c["body"] for c in data.get("comment", {}).get("comments", [])]
+            return {"description": desc, "comments": comments}
+        except httpx.HTTPError as e:
+            logger.error("Failed to fetch Jira issue details for %s: %s", issue_key, e)
+            return {"description": "", "comments": []}
 
