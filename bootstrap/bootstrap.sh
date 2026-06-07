@@ -85,7 +85,8 @@ install_argocd() {
   kubectl wait --for=condition=Available deployment/argocd-server -n argocd --timeout=300s
   
   echo "Applying ArgoCD GitOps Application..."
-  kubectl apply -f /workspace/deploy/argocd-app.yaml
+  sed "s|__GITOPS_REPO_URL__|${GITOPS_REPO_URL}|g" /workspace/deploy/argocd-app.template.yaml > /tmp/argocd-app.yaml
+  kubectl apply -f /tmp/argocd-app.yaml
 }
 
 main() {

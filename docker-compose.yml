@@ -83,6 +83,7 @@ services:
       KUBECONFIG_PATH: /kubeconfig/kubeconfig.yaml
       WEBHOOK_URL: http://k8s-agent-api:8000/webhooks/robusta
       DEMO_NAMESPACE: k8s-agent-demo
+      GITOPS_REPO_URL: ${GITOPS_REPO_URL}
     depends_on:
       - k3s
       - k8s-agent-api

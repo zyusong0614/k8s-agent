@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: 'https://github.com/zyusong0614/k8s-agent-gitops'
+    repoURL: '__GITOPS_REPO_URL__'
     path: deploy/workloads
     targetRevision: HEAD
   destination:
