@@ -86,7 +86,7 @@ services:
     depends_on:
       - redis
       - k8s-agent-worker
-    command: celery -A app.worker.celery_app beat --loglevel=info
+    command: celery -A app.worker.celery_app beat --loglevel=info --schedule /tmp/celerybeat-schedule
 
   k3s:
     image: rancher/k3s:v1.30.5-k3s1
