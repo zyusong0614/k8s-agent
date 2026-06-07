@@ -72,6 +72,17 @@ def handle_incident(payload: dict, settings: Settings, redis_client) -> dict:
     correlation_key = f"active_issue:{incident.namespace}:{incident.workload_name}"
     existing_issue_key = redis_client.get(correlation_key)
     
+    if not existing_issue_key:
+        # Fallback to Jira search if Redis is cleared or expired
+        search_jql = f'project = "{settings.jira_project_key}" AND summary ~ "{incident.workload_name}" AND statusCategory != Done ORDER BY created DESC'
+        existing_issues = jira.search_issues(search_jql)
+        for issue_data in existing_issues:
+            summary = issue_data.get("fields", {}).get("summary", "")
+            if incident.workload_name in summary and incident.namespace in summary:
+                existing_issue_key = issue_data["key"]
+                redis_client.setex(correlation_key, settings.correlation_ttl_seconds, existing_issue_key)
+                break
+    
     pr: PullRequest | None = None
     is_appended = False
 

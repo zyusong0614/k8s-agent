@@ -36,7 +36,7 @@ class JiraClient:
                 "summary": decision.summary[:255],
                 "description": desc,
                 "issuetype": {"name": "Task"},
-                "labels": ["AI-Remediation"]
+                "labels": ["AI-Remediation"] if decision.pr_required else ["AI-Generated"]
             }
         }
         try:
