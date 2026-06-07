@@ -6,7 +6,6 @@ __pycache__/
 ._*
 k8s_agent.egg-info/
 deploy/robusta/values.generated.yaml
-docker-compose.yml
 *.log
 .idea/
 .vscode/
